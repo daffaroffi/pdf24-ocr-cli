@@ -218,6 +218,13 @@ async fn download_result(config: &OcrConfig, job_id: &str, output_path: &str) ->
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
+    
+    // Check for version flag
+    if args.len() > 1 && (args[1] == "--version" || args[1] == "-v") {
+        println!("pdf24-ocr-cli version {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     if args.len() < 2 {
         println!("Usage: {} <input_pdf> [lang]", args[0]);
         return Ok(());
