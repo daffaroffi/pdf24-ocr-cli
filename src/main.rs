@@ -13,19 +13,6 @@ use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
 
 #[derive(Debug, Serialize, Deserialize)]
-struct UploadResult {
-    file: String,
-    #[serde(rename = "size")]
-    size: u64,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct JobResult {
-    #[serde(rename = "jobId")]
-    job_id: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 struct StatusResult {
     #[serde(default)]
     status: String,
@@ -49,10 +36,14 @@ impl OcrConfig {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert("Origin", "https://tools.pdf24.org".parse().unwrap());
         headers.insert("Referer", "https://tools.pdf24.org/en/ocr-pdf".parse().unwrap());
+        headers.insert("Accept", "*/*".parse().unwrap());
+        headers.insert("Connection", "keep-alive".parse().unwrap());
 
         let client = Client::builder()
             .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
             .default_headers(headers)
+            .cookie_store(true)
+            .timeout(Duration::from_secs(300)) // High timeout for large files
             .build()
             .unwrap();
 
@@ -67,7 +58,7 @@ impl OcrConfig {
     }
 }
 
-async fn upload_file(config: &OcrConfig, file_path: &Path) -> Result<UploadResult> {
+async fn upload_file(config: &OcrConfig, file_path: &Path) -> Result<serde_json::Value> {
     let file = File::open(file_path).await.context("Failed to open file")?;
     let metadata = file.metadata().await?;
     let file_size = metadata.len();
@@ -80,9 +71,10 @@ async fn upload_file(config: &OcrConfig, file_path: &Path) -> Result<UploadResul
         .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")?
         .progress_chars("#>-"));
 
+    let pb_clone = pb.clone();
     let stream = ReaderStream::new(file).map(move |item| {
         if let Ok(ref chunk) = item {
-            pb.inc(chunk.len() as u64);
+            pb_clone.inc(chunk.len() as u64);
         }
         item
     });
@@ -103,14 +95,18 @@ async fn upload_file(config: &OcrConfig, file_path: &Path) -> Result<UploadResul
         return Err(anyhow!("Upload failed with status: {}", resp.status()));
     }
 
-    let results: Vec<UploadResult> = resp.json().await?;
-    let res = results.into_iter().next().ok_or_else(|| anyhow!("No upload result in response"))?;
+    let results: serde_json::Value = resp.json().await?;
+    let res = results.get(0).cloned().ok_or_else(|| anyhow!("No upload result in response"))?;
     
-    println!("\n[+] Uploaded. File ID: {}", res.file);
+    pb.finish_with_message("Upload complete");
+    if let Some(file_id) = res.get("file").and_then(|v| v.as_str()) {
+        println!("[+] Uploaded. File ID: {}", file_id);
+    }
+    
     Ok(res)
 }
 
-async fn start_ocr_job(config: &OcrConfig, upload_res: UploadResult, lang: &str) -> Result<String> {
+async fn start_ocr_job(config: &OcrConfig, upload_res: serde_json::Value, lang: &str) -> Result<String> {
     let tesseract_lang = config.get_tesseract_lang(lang);
     println!("[*] Starting OCR job (lang={})...", tesseract_lang);
 
@@ -132,9 +128,11 @@ async fn start_ocr_job(config: &OcrConfig, upload_res: UploadResult, lang: &str)
         .send()
         .await?;
 
-    let res: JobResult = resp.json().await?;
-    println!("[+] Job started. Job ID: {}", res.job_id);
-    Ok(res.job_id)
+    let res: serde_json::Value = resp.json().await?;
+    let job_id = res.get("jobId").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("No jobId in response: {}", res))?;
+    
+    println!("[+] Job started. Job ID: {}", job_id);
+    Ok(job_id.to_string())
 }
 
 async fn poll_status(config: &OcrConfig, job_id: &str) -> Result<()> {
@@ -143,7 +141,7 @@ async fn poll_status(config: &OcrConfig, job_id: &str) -> Result<()> {
         .template("{spinner:.green} [*] Processing OCR [{bar:40.cyan/blue}] {percent}% {msg}")?
         .progress_chars("#>-"));
     
-    pb.set_message("Initializing...");
+    pb.set_message("Waiting for server...");
     pb.enable_steady_tick(Duration::from_millis(100));
 
     let re_page = Regex::new(r"page (\d+) of (\d+)")?;
@@ -157,7 +155,8 @@ async fn poll_status(config: &OcrConfig, job_id: &str) -> Result<()> {
             .await?;
 
         let text = resp.text().await?;
-        // println!("\nDEBUG RESPONSE: {}", text); 
+        // Keep debug writing but hidden from stdout
+        let _ = std::fs::write("debug_status.json", &text);
 
         let res: StatusResult = serde_json::from_str(&text).context(format!("Failed to parse JSON: {}", text))?;
 
@@ -170,14 +169,17 @@ async fn poll_status(config: &OcrConfig, job_id: &str) -> Result<()> {
         }
 
         if let Some(job) = res.job {
-            if let Some(msg) = job.get("progress.msg").and_then(|m| m.as_str()) {
-                pb.set_message(msg.to_string());
-                if let Some(caps) = re_page.captures(msg) {
-                    let current = caps[1].parse::<u64>().unwrap_or(0);
-                    let total = caps[2].parse::<u64>().unwrap_or(100);
-                    pb.set_length(total);
-                    pb.set_position(current);
-                }
+            // Check for progress message in different possible fields
+            let msg = job.get("progress.msg").and_then(|m| m.as_str())
+                .or_else(|| job.get("description").and_then(|m| m.as_str()))
+                .unwrap_or("Processing...");
+
+            pb.set_message(msg.to_string());
+            if let Some(caps) = re_page.captures(msg) {
+                let current = caps[1].parse::<u64>().unwrap_or(0);
+                let total = caps[2].parse::<u64>().unwrap_or(100);
+                pb.set_length(total);
+                pb.set_position(current);
             }
         }
 
@@ -191,16 +193,27 @@ async fn download_result(config: &OcrConfig, job_id: &str, output_path: &str) ->
     println!("[*] Downloading result to {}...", output_path);
     let url = format!("{}?action=downloadJobResult&jobId={}", config.base_url, job_id);
     
-    let mut resp = config.client.get(url).send().await?;
+    let resp = config.client.get(url).send().await?;
     if !resp.status().is_success() {
         return Err(anyhow!("Download failed with status: {}", resp.status()));
     }
 
+    let content_length = resp.content_length().unwrap_or(0);
+    let pb = ProgressBar::new(content_length);
+    pb.set_style(ProgressStyle::default_bar()
+        .template("{spinner:.green} [*] Downloading [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")?
+        .progress_chars("#>-"));
+
     let mut file = File::create(output_path).await?;
-    while let Some(chunk) = resp.chunk().await? {
+    let mut stream = resp.bytes_stream();
+
+    while let Some(item) = stream.next().await {
+        let chunk = item?;
         file.write_all(&chunk).await?;
+        pb.inc(chunk.len() as u64);
     }
 
+    pb.finish_with_message("Download complete");
     println!("[+] Success! File saved as {}", output_path);
     Ok(())
 }
@@ -215,7 +228,10 @@ async fn main() -> Result<()> {
 
     let input_path = &args[1];
     let lang = if args.len() > 2 { &args[2] } else { "en" };
-    let output_path = format!("ocr_result_{}", Path::new(input_path).file_name().unwrap().to_str().unwrap());
+    
+    // Improved output path logic
+    let filename = Path::new(input_path).file_name().and_then(|n| n.to_str()).unwrap_or("result.pdf");
+    let output_path = format!("ocr_result_{}", filename);
 
     let config = OcrConfig::new();
     println!("[*] Using server: {}", config.base_url);
