@@ -7,28 +7,30 @@ import json
 import threading
 import itertools
 
-class Spinner:
-    def __init__(self, message="[*] Processing..."):
-        self.spinner = itertools.cycle(['-', '/', '|', '\\'])
-        self.busy = False
-        self.delay = 0.1
-        self.message = message
-        self.thread = None
+import re
 
-    def spinner_task(self):
-        while self.busy:
-            print(f"\r{self.message} {next(self.spinner)}", end="", flush=True)
-            time.sleep(self.delay)
+class ProgressBar:
+    def __init__(self, total=100, prefix='', suffix='', decimals=1, length=30, fill='#'):
+        self.total = total
+        self.prefix = prefix
+        self.suffix = suffix
+        self.decimals = decimals
+        self.length = length
+        self.fill = fill
+        self.iteration = 0
 
-    def __enter__(self):
-        self.busy = True
-        self.thread = threading.Thread(target=self.spinner_task)
-        self.thread.start()
-
-    def __exit__(self, exception_type, exception_value, traceback):
-        self.busy = False
-        time.sleep(self.delay)
-        print("\r" + " " * (len(self.message) + 5) + "\r", end="", flush=True)
+    def print_progress(self, iteration, total=None, suffix=None):
+        if total: self.total = total
+        if suffix: self.suffix = suffix
+        self.iteration = iteration
+        percent = ("{0:." + str(self.decimals) + "f}").format(100 * (self.iteration / float(self.total)))
+        filled_length = int(self.length * self.iteration // self.total)
+        bar = self.fill * filled_length + '-' * (self.length - filled_length)
+        # \r to go to start, \033[K to clear the line
+        sys.stdout.write(f'\r{self.prefix} |{bar}| {percent}% {self.suffix}\033[K')
+        sys.stdout.flush()
+        if self.iteration >= self.total:
+            print()
 
 import http.client
 import urllib.parse
@@ -174,28 +176,47 @@ def ocr_pdf24(input_file, lang='en', output_file=None):
     print(f"\033[92m[+] Job started. Job ID: {job_id}\033[0m")
 
     # --- PHASE 3: POLL STATUS ---
-    with Spinner("[*] Processing OCR..."):
-        while True:
-            try:
-                status_payload = {"jobId": job_id}
-                response = session.post(f"{base_url}?action=getStatus", json=status_payload, timeout=20)
+    pbar = ProgressBar(prefix='[*] Processing OCR', length=25)
+    while True:
+        try:
+            status_payload = {"jobId": job_id}
+            response = session.post(f"{base_url}?action=getStatus", json=status_payload, timeout=20)
+            
+            if response.status_code != 200:
+                time.sleep(5)
+                continue
                 
-                if response.status_code != 200:
-                    time.sleep(5) # Wait before retry
-                    continue
-                    
-                result = response.json()
-                if result.get('status') == 'done':
-                    break
-                elif result.get('status') == 'error':
-                    print(f"\n\033[91m[-] OCR failed: {result.get('error', 'Unknown error')}\033[0m")
-                    return
-                
-                time.sleep(2)
-            except requests.exceptions.Timeout:
-                continue 
-            except Exception:
+            result = response.json()
+            status = result.get('status')
+            
+            # Extract progress description from result['job']['progress.msg']
+            job_info = result.get('job', {})
+            description = job_info.get('progress.msg', '')
+            
+            if status == 'done':
+                pbar.print_progress(100, 100, suffix='Complete!          ')
                 break
+            elif status == 'error':
+                print(f"\n\033[91m[-] OCR failed: {result.get('error', 'Unknown error')}\033[0m")
+                return
+            
+            # Try to parse "page X of Y" from description
+            # Example: "Recognizing text, page 20 of 265"
+            match = re.search(r'page (\d+) of (\d+)', description)
+            if match:
+                current_page = int(match.group(1))
+                total_pages = int(match.group(2))
+                pbar.print_progress(current_page, total_pages, suffix=f'({description})')
+            else:
+                # If no page info, just show the description as suffix
+                pbar.print_progress(pbar.iteration, suffix=f'({description})' if description else 'Processing...')
+            
+            time.sleep(2)
+        except requests.exceptions.Timeout:
+            continue 
+        except Exception as e:
+            print(f"\n[!] Error polling: {e}")
+            break
     
     print(f"\033[92m[+] OCR finished!\033[0m")
 
