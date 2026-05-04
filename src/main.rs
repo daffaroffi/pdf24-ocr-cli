@@ -43,7 +43,7 @@ impl OcrConfig {
             .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
             .default_headers(headers)
             .cookie_store(true)
-            .timeout(Duration::from_secs(300)) // High timeout for large files
+            .timeout(Duration::from_secs(300))
             .build()
             .unwrap();
 
@@ -141,7 +141,7 @@ async fn poll_status(config: &OcrConfig, job_id: &str) -> Result<()> {
         .template("{spinner:.green} [*] Processing OCR [{bar:40.cyan/blue}] {percent}% {msg}")?
         .progress_chars("#>-"));
     
-    pb.set_message("Waiting for server...");
+    pb.set_message("Initializing...");
     pb.enable_steady_tick(Duration::from_millis(100));
 
     let re_page = Regex::new(r"page (\d+) of (\d+)")?;
@@ -166,7 +166,6 @@ async fn poll_status(config: &OcrConfig, job_id: &str) -> Result<()> {
         }
 
         if let Some(job) = res.job {
-            // Check for progress message in different possible fields
             let msg = job.get("progress.msg").and_then(|m| m.as_str())
                 .or_else(|| job.get("description").and_then(|m| m.as_str()))
                 .unwrap_or("Processing...");
@@ -233,7 +232,6 @@ async fn main() -> Result<()> {
     let input_path = &args[1];
     let lang = if args.len() > 2 { &args[2] } else { "en" };
     
-    // Improved output path logic
     let filename = Path::new(input_path).file_name().and_then(|n| n.to_str()).unwrap_or("result.pdf");
     let output_path = format!("ocr_result_{}", filename);
 
