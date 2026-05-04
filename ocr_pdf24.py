@@ -58,44 +58,54 @@ def ocr_pdf24(input_file, lang='en', output_file=None):
         print(f"\033[91m[!] Error: File {input_file} not found.\033[0m")
         return
 
-    # 1. Select a random worker server
-    server_num = random.randint(0, 29)
-    base_url = f"https://filetools{server_num}.pdf24.org/client.php"
-    print(f"\033[94m[*] Using server: {base_url}\033[0m")
-
+    max_retries = 3
+    retry_count = 0
+    upload_result = None
+    base_url = ""
     session = requests.Session()
-    
-    # 2. Upload the file with progress
-    pf = ProgressFile(input_file, 'rb')
-    try:
-        files = {
-            'file': (os.path.basename(input_file), pf, 'application/pdf')
-        }
-        # Timeout added to avoid hanging
-        response = session.post(f"{base_url}?action=upload", files=files, timeout=60)
-        print() # New line after progress bar
-    except requests.exceptions.Timeout:
-        print(f"\n\033[91m[!] Upload timed out. The server {base_url} might be slow.\033[0m")
-        return
-    except Exception as e:
-        print(f"\n\033[91m[!] Upload error: {e}\033[0m")
-        return
-    finally:
-        pf.close()
-    
-    if response.status_code != 200:
-        print(f"\033[91m[-] Upload failed: {response.status_code}\033[0m")
-        return
-    
-    try:
-        upload_result = response.json()[0]
-    except Exception:
-        print(f"\033[91m[-] Invalid upload response: {response.text}\033[0m")
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Origin': 'https://tools.pdf24.org',
+        'Referer': 'https://tools.pdf24.org/en/ocr-pdf'
+    })
+
+    # --- PHASE 1: UPLOAD (with Server Fallback) ---
+    while retry_count < max_retries:
+        server_num = random.randint(0, 29)
+        base_url = f"https://filetools{server_num}.pdf24.org/client.php"
+        
+        if retry_count > 0:
+            print(f"\033[93m[*] Retrying with different server (Attempt {retry_count+1}/{max_retries})...\033[0m")
+        
+        print(f"\033[94m[*] Using server: {base_url}\033[0m")
+
+        pf = ProgressFile(input_file, 'rb')
+        try:
+            files = {'file': (os.path.basename(input_file), pf, 'application/pdf')}
+            # Use tuple for (connect, read) timeouts
+            response = session.post(f"{base_url}?action=upload", files=files, timeout=(10, 120))
+            print() # New line after progress bar
+            
+            if response.status_code == 200:
+                upload_result = response.json()[0]
+                break
+            else:
+                print(f"\033[91m[-] Server returned {response.status_code}. Trying another server...\033[0m")
+        except (requests.exceptions.RequestException, TimeoutError) as e:
+            print(f"\n\033[93m[!] Server error: {type(e).__name__}. Switching server...\033[0m")
+        finally:
+            pf.close()
+        
+        retry_count += 1
+        time.sleep(1)
+
+    if not upload_result:
+        print(f"\033[91m[!] Failed to upload file after {max_retries} attempts.\033[0m")
         return
         
     print(f"\033[92m[+] Uploaded. Server File ID: {upload_result['file']}\033[0m")
 
-    # 3. Start OCR Job
+    # --- PHASE 2: START OCR JOB ---
     print(f"[*] Starting OCR job (lang={lang})...")
     payload = {
         "files": [upload_result],
@@ -110,19 +120,18 @@ def ocr_pdf24(input_file, lang='en', output_file=None):
     }
     
     try:
-        response = session.post(f"{base_url}?action=ocrPdf", json=payload, timeout=30)
-    except requests.exceptions.Timeout:
-        print(f"\033[91m[!] OCR start timed out.\033[0m")
+        response = session.post(f"{base_url}?action=ocrPdf", json=payload, timeout=(10, 40))
+        if response.status_code != 200:
+            print(f"\033[91m[-] Job creation failed: {response.status_code}\033[0m")
+            return
+        job_id = response.json()['jobId']
+    except Exception as e:
+        print(f"\033[91m[!] Error starting job: {e}\033[0m")
         return
-        
-    if response.status_code != 200:
-        print(f"\033[91m[-] Job creation failed: {response.status_code}\033[0m")
-        return
-    
-    job_id = response.json()['jobId']
+
     print(f"\033[92m[+] Job started. Job ID: {job_id}\033[0m")
 
-    # 4. Poll Status with Spinner
+    # --- PHASE 3: POLL STATUS ---
     with Spinner("[*] Processing OCR..."):
         while True:
             try:
@@ -130,8 +139,8 @@ def ocr_pdf24(input_file, lang='en', output_file=None):
                 response = session.post(f"{base_url}?action=getStatus", json=status_payload, timeout=20)
                 
                 if response.status_code != 200:
-                    print(f"\n\033[91m[-] Status check failed: {response.status_code}\033[0m")
-                    break
+                    time.sleep(5) # Wait before retry
+                    continue
                     
                 result = response.json()
                 if result.get('status') == 'done':
@@ -142,20 +151,20 @@ def ocr_pdf24(input_file, lang='en', output_file=None):
                 
                 time.sleep(2)
             except requests.exceptions.Timeout:
-                continue # Keep trying on status timeout
+                continue 
             except Exception:
                 break
     
     print(f"\033[92m[+] OCR finished!\033[0m")
 
-    # 5. Download Result
+    # --- PHASE 4: DOWNLOAD ---
     if output_file is None:
         output_file = "ocr_result_" + os.path.basename(input_file)
         
     print(f"[*] Downloading result to {output_file}...")
     download_url = f"{base_url}?action=downloadJobResult&jobId={job_id}"
     try:
-        response = session.get(download_url, timeout=60)
+        response = session.get(download_url, timeout=(10, 300)) # Long timeout for download
         if response.status_code == 200:
             with open(output_file, 'wb') as f:
                 f.write(response.content)
