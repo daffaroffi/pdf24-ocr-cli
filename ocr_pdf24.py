@@ -140,16 +140,24 @@ def ocr_pdf24(input_file, lang='en', output_file=None):
     print(f"\033[92m[+] Uploaded. Server File ID: {upload_result['file']}\033[0m")
 
     # --- PHASE 2: START OCR JOB ---
-    print(f"[*] Starting OCR job (lang={lang})...")
+    # Map common 2-letter codes to Tesseract 3-letter codes
+    lang_map = {
+        'id': 'ind',
+        'en': 'eng',
+        'ar': 'ara'
+    }
+    tesseract_lang = lang_map.get(lang.lower(), lang)
+    
+    print(f"[*] Starting OCR job (lang={tesseract_lang}, force=True)...")
     payload = {
         "files": [upload_result],
-        "langCode": lang,
+        "langCode": tesseract_lang,
         "outputType": "pdf",
         "removeBackground": False,
         "rotatePages": False,
         "deskew": False,
         "clean": False,
-        "forceOcr": False,
+        "forceOcr": True, # CRITICAL: Forces OCR even if text is detected
         "joinFiles": False
     }
     
