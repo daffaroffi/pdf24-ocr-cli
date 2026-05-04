@@ -7,29 +7,6 @@ import json
 import threading
 import itertools
 
-class ProgressFile(object):
-    def __init__(self, filename, mode):
-        self.filename = filename
-        self.fp = open(filename, mode)
-        self.total_size = os.path.getsize(filename)
-        self.seen_so_far = 0
-
-    def read(self, size=-1):
-        data = self.fp.read(size)
-        self.seen_so_far += len(data)
-        if self.total_size > 0:
-            percent = (self.seen_so_far / self.total_size) * 100
-            bar = '#' * int(percent / 5)
-            spaces = ' ' * (20 - len(bar))
-            print(f"\r[*] Uploading: [{bar}{spaces}] {percent:3.1f}%", end="", flush=True)
-        return data
-
-    def __len__(self):
-        return self.total_size
-
-    def close(self):
-        self.fp.close()
-
 class Spinner:
     def __init__(self, message="[*] Processing..."):
         self.spinner = itertools.cycle(['-', '/', '|', '\\'])
@@ -52,6 +29,74 @@ class Spinner:
         self.busy = False
         time.sleep(self.delay)
         print("\r" + " " * (len(self.message) + 5) + "\r", end="", flush=True)
+
+import http.client
+import urllib.parse
+import ssl
+
+def stream_upload(base_url, file_path):
+    url_parts = urllib.parse.urlparse(base_url)
+    host = url_parts.netloc
+    path = url_parts.path + "?action=upload"
+    
+    boundary = "----WebKitFormBoundaryPDF24Upload"
+    filename = os.path.basename(file_path)
+    
+    head = (
+        f"--{boundary}\r\n"
+        f"Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n"
+        f"Content-Type: application/pdf\r\n\r\n"
+    ).encode('utf-8')
+    
+    tail = f"\r\n--{boundary}--\r\n".encode('utf-8')
+    
+    file_size = os.path.getsize(file_path)
+    total_len = len(head) + file_size + len(tail)
+    
+    headers = {
+        'Content-Type': f'multipart/form-data; boundary={boundary}',
+        'Content-Length': str(total_len),
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Origin': 'https://tools.pdf24.org',
+        'Referer': 'https://tools.pdf24.org/en/ocr-pdf',
+        'Connection': 'keep-alive'
+    }
+    
+    context = ssl.create_default_context()
+    # High timeout for slow connections (e.g., 5 minutes)
+    conn = http.client.HTTPSConnection(host, context=context, timeout=300) 
+    
+    conn.putrequest("POST", path)
+    for k, v in headers.items():
+        conn.putheader(k, v)
+    conn.endheaders()
+    
+    conn.send(head)
+    
+    seen = 0
+    with open(file_path, "rb") as f:
+        while True:
+            chunk = f.read(65536) # Read in 64KB chunks
+            if not chunk:
+                break
+            conn.send(chunk)
+            seen += len(chunk)
+            percent = (seen / file_size) * 100
+            bar = '#' * int(percent / 5)
+            spaces = ' ' * (20 - len(bar))
+            print(f"\r[*] Uploading: [{bar}{spaces}] {percent:3.1f}%", end="", flush=True)
+            
+    conn.send(tail)
+    print() # Newline after progress bar
+    
+    resp = conn.getresponse()
+    body = resp.read()
+    conn.close()
+    
+    if resp.status == 200:
+        return json.loads(body.decode('utf-8'))[0]
+    else:
+        raise Exception(f"HTTP {resp.status}: {body.decode('utf-8')}")
 
 def ocr_pdf24(input_file, lang='en', output_file=None):
     if not os.path.exists(input_file):
@@ -79,25 +124,14 @@ def ocr_pdf24(input_file, lang='en', output_file=None):
         
         print(f"\033[94m[*] Using server: {base_url}\033[0m")
 
-        pf = ProgressFile(input_file, 'rb')
         try:
-            files = {'file': (os.path.basename(input_file), pf, 'application/pdf')}
-            # Use tuple for (connect, read) timeouts
-            response = session.post(f"{base_url}?action=upload", files=files, timeout=(10, 120))
-            print() # New line after progress bar
-            
-            if response.status_code == 200:
-                upload_result = response.json()[0]
-                break
-            else:
-                print(f"\033[91m[-] Server returned {response.status_code}. Trying another server...\033[0m")
-        except (requests.exceptions.RequestException, TimeoutError) as e:
-            print(f"\n\033[93m[!] Server error: {type(e).__name__}. Switching server...\033[0m")
-        finally:
-            pf.close()
+            upload_result = stream_upload(base_url, input_file)
+            break
+        except Exception as e:
+            print(f"\n\033[93m[!] Server error: {e}. Switching server...\033[0m")
         
         retry_count += 1
-        time.sleep(1)
+        time.sleep(2)
 
     if not upload_result:
         print(f"\033[91m[!] Failed to upload file after {max_retries} attempts.\033[0m")
