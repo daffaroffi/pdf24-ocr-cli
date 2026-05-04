@@ -2,6 +2,15 @@
 
 Project ini adalah fase Proof of Concept (PoC) untuk memetakan alur API internal PDF24. Seluruh logika di sini digunakan sebagai acuan implementasi final menggunakan bahasa Rust.
 
+## [v1.0.0] - 2026-05-04 (Stable Rust Release)
+
+### Added
+- **Full Rust Migration**: Implementasi ulang seluruh logika dari Python ke Rust untuk performa dan keamanan tipe data.
+- **Persistent Cookie Store**: Penanganan session otomatis menggunakan `reqwest::Client` dengan cookie store, memperbaiki masalah "Forbidden access".
+- **Advanced Metadata Handling**: Penggunaan JSON dinamis untuk metadata file upload guna memastikan kompatibilitas penuh dengan API PDF24.
+- **Enhanced Progress Bars**: Penambahan progress bar untuk proses Download dan perbaikan sinkronisasi spinner pada proses OCR.
+- **Robust Error Handling**: Implementasi `anyhow` dan `Context` untuk pesan error yang lebih informatif.
+
 ## [v0.1.0-prototype] - 2026-05-04 (Python PoC Phase)
 
 ### Added

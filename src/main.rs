@@ -155,9 +155,6 @@ async fn poll_status(config: &OcrConfig, job_id: &str) -> Result<()> {
             .await?;
 
         let text = resp.text().await?;
-        // Keep debug writing but hidden from stdout
-        let _ = std::fs::write("debug_status.json", &text);
-
         let res: StatusResult = serde_json::from_str(&text).context(format!("Failed to parse JSON: {}", text))?;
 
         if res.status == "done" {
