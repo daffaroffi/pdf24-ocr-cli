@@ -1,0 +1,22 @@
+services:
+  api:
+    build: .
+    image: pdf24-ocr-api:0.1.0
+    container_name: pdf24-ocr-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - tmp_data:/app/tmp
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx, sys; sys.exit(0 if httpx.get('http://localhost:8000/health', timeout=3).status_code == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  tmp_data:
+    name: pdf24-ocr-api-tmp

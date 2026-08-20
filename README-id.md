@@ -73,3 +73,12 @@ Proyek ini untuk penggunaan edukasi dan pribadi. Alat ini berinteraksi dengan AP
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+## HTTP API Wrapper
+
+Wrapper HTTP FastAPI tersedia di [`api/`](api/README-id.md). Mengekspos
+layanan OCR yang sama sebagai endpoint sync, async, dan batch, dengan
+dokumentasi OpenAPI yang auto-generated di `/docs`. Kalau lo mau panggil
+OCR dari web app, script, atau service tanpa nge-spawn CLI, lihat
+[`api/README-id.md`](api/README-id.md) (atau dalam Bahasa Inggris:
+[`api/README.md`](api/README.md)).
+

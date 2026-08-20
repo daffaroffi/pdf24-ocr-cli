@@ -74,3 +74,12 @@ This project is for educational and personal use. It interacts with the PDF24 pu
 
 ---
 *Developed as a high-performance alternative to web-based OCR tools.*
+
+## HTTP API Wrapper
+
+A FastAPI HTTP wrapper is available in [`api/`](api/README.md). It exposes
+the same OCR service as sync, async, and batch endpoints, with OpenAPI
+docs auto-generated at `/docs`. If you want to call OCR from a web app,
+script, or service without spawning the CLI, see
+[`api/README.md`](api/README.md) (or in Bahasa Indonesia:
+[`api/README-id.md`](api/README-id.md)).

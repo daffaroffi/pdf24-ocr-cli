@@ -1,0 +1,12 @@
+# Ruff configuration: lint + format
+line-length = 100
+target-version = "py310"
+
+[lint]
+select = ["E", "F", "W", "I", "B", "UP", "N", "SIM", "PL", "RUF"]
+ignore = [
+    "E501",  # line length (handled by formatter)
+    "PLR0913",  # too many arguments
+    "PLR2004",  # magic value (acceptable in tests)
+    "B008",  # function call in default argument (FastAPI Depends pattern)
+]
